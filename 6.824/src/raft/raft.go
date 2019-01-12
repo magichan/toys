@@ -41,6 +41,7 @@ type ApplyMsg struct {
 //
 // A Go object implementing a single Raft peer.
 //
+
 type Raft struct {
 	mu        sync.Mutex
 	peers     []*labrpc.ClientEnd
@@ -188,6 +189,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here.
 	currentTerm, _ := rf.GetState()
 	if args.Term < currentTerm {
+		// 因为当前 term 要比请求大，因此拒绝。
 		reply.Term = currentTerm
 		reply.VoteGranted = false
 		printTime()
@@ -196,6 +198,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	}
 
 	if rf.votedFor != -1 && args.Term <= rf.currentTerm {
+		// 已经投票了，所以拒绝。
 		reply.VoteGranted = false
 		rf.mu.Lock()
 		rf.setTerm(max(args.Term, currentTerm))
@@ -204,6 +207,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		printTime()
 		fmt.Printf("rejected candidate=%d term = %d server = %d, currentTerm = %d, has_voted_for = %d\n", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.votedFor)
 	} else {
+		// 投票成功
 		rf.mu.Lock()
 		rf.becomeFollower(max(args.Term, currentTerm), args.CandidateId)
 		rf.mu.Unlock()
@@ -294,7 +298,7 @@ func (rf *Raft) sendRequestVoteAndTrigger(server int, args RequestVoteArgs, repl
 		} else {
 			rf.electCh <- false
 			printTime()
-			fmt.Printf("candidate=%d receive unvote from server=%d, ok = %d\n", rf.me, server, ok)
+			fmt.Printf("candidate=%d receive unvote from server=%d, ok = %v\n", rf.me, server, ok)
 		}
 	case <-time.After(time.Duration(timeout) * time.Millisecond):
 		printTime()
