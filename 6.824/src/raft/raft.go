@@ -200,10 +200,10 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 	if rf.votedFor != -1 && args.Term <= rf.currentTerm {
 		// 已经投票了，所以拒绝。
 		reply.VoteGranted = false
-		rf.mu.Lock()
-		rf.setTerm(max(args.Term, currentTerm))
+		//rf.mu.Lock()
+		//rf.setTerm(max(args.Term, currentTerm))
 		reply.Term = rf.currentTerm
-		rf.mu.Unlock()
+		//rf.mu.Unlock()
 		printTime()
 		fmt.Printf("rejected candidate=%d term = %d server = %d, currentTerm = %d, has_voted_for = %d\n", args.CandidateId, args.Term, rf.me, rf.currentTerm, rf.votedFor)
 	} else {
