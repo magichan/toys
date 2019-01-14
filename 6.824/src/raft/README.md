@@ -72,7 +72,12 @@ type RequestVoteReply struct {
 
 以上是错的，完全看 item 和 是否投票。
 如果 item > args.items 那么则返回失败
-如果 voted != -1 && 
+如果 voted != -1 && item <= ags.item 则返回失败
+如果没有投票，且 item > arg.iterm 则成功
+
+
+如果term < currentTerm返回 false （5.2 节）
+如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
 
 ## AppendEntries 的操作细节 
 
