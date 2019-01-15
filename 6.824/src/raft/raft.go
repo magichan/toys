@@ -225,7 +225,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 		reply.Term = rf.currentTerm
 		rf.mu.Lock()
 		rf.currentLeader = args.LeaderId
-		rf.votedFor = args.LeaderId
+	//	rf.votedFor = args.LeaderId
 		rf.state = 0
 		rf.setMessageTime(milliseconds())
 		printTime()

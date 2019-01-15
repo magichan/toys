@@ -1,4 +1,4 @@
-package src
+package raft
 
 //
 // this is an outline of the API that raft must expose to
@@ -20,6 +20,7 @@ package src
 import (
 	"golang.org/x/text/feature/plural"
 	"sync"
+	"time"
 )
 import "labrpc"
 
@@ -63,8 +64,8 @@ type Raft struct {
 	timeout         int
 	currentLeader   int // -1 is noting
 
-	heartbeat chan interface{}
-
+	heartbeat chan struct{}
+	cancelSelection chan struct{}
 }
 
 func (rf * Raft) ToFollower(term int, candidate int){
@@ -183,31 +184,23 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	// 如果为 HeatBeats 的功能
 	//如果 term < currentTerm 就返回 false （5.1 节）
 	//获取这个心跳信号，意味这投票已经结束了，所有的接受该信号的人都已经变为 Leader
-	//并且重置信号量
+	// 	将这个 Raft 转换为 Leader 的 Follower，重置投票记录，如果是 Candidate 转换的话，需要取消这个 raft 端的
 	rf.mu.Lock()
 	defer  rf.mu.Unlock()
 	if rf.currentTerm > args.Term {
-
 		reply.term = rf.currentTerm
 		reply.success = false
-		return
 	}else{
-
+		rf.heartbeat <- struct {}{}
+		rf.currentTerm = args.Term
+		rf.currentLeader = args.LeaderId
+		if rf.state == CANDIDATE {
+			rf.cancelSelection <- struct{}{}
+		}
+		rf.state = FOLLOWER
+		rf.votedFor = -1 // reset voted
+		reply.success = true
 	}
-	if rf.currentLeader == args.LeaderId && rf.currentTerm == args.Term {
-		rf.heartbeat <- struct {
-		}{}
-		reply.term = rf.currentTerm
-		reply.success =  true
-		return
-	}
-	if rf.state == FOLLOWER {
-		rf.votedFor =
-
-	}else if rf.state == CANDIDATE {
-
-	}
-
 
 }
 
@@ -280,6 +273,9 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 func (rf * Raft) startUp(){
+	timer := time.NewTimer()
+
+
 	/*
 	有两个定时器，一个是 心跳时间大于 150 毫秒 ，一个是等待心跳在 200 ~ 300 毫秒之间，等待选举超时，
 	启动一个随即定时器， 100 ~ 200

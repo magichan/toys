@@ -81,6 +81,8 @@ type RequestVoteReply struct {
 
 ## AppendEntries 的操作细节 
 
+如果 term < currentTerm 就返回 false （5.1 节） 
+并且重置信号量
 
 
 ## leader 后流程
