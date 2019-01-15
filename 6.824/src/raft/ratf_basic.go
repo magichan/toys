@@ -1,4 +1,4 @@
-package raft
+package src
 
 //
 // this is an outline of the API that raft must expose to
@@ -17,7 +17,10 @@ package raft
 //   in the same server.
 //
 
-import "sync"
+import (
+	"golang.org/x/text/feature/plural"
+	"sync"
+)
 import "labrpc"
 
 // import "bytes"
@@ -32,7 +35,7 @@ import "labrpc"
 //
 type ApplyMsg struct {
 	Index       int
-	Command     interface{}
+	Command     struct{}
 	UseSnapshot bool   // ignore for lab2; only used in lab3
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
@@ -60,8 +63,15 @@ type Raft struct {
 	timeout         int
 	currentLeader   int // -1 is noting
 
-	heatbeat  chan interface{}
+	heartbeat chan interface{}
 
+}
+
+func (rf * Raft) ToFollower(term int, candidate int){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.currentTerm = term
+	rf.votedFor = candidate
 }
 
 // return currentTerm and whether this server
@@ -147,13 +157,57 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
 	// 什么时候可以投，什么时候不可以投，
 	// 投票后是否重置计时器。
+	// 什么时候可以投
+	// 		如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
+	//      并且发送 heartbeat
+	rf.mu.Lock()
+	if rf.currentTerm <= args.Term && ( rf.votedFor == -1 || rf.votedFor == args.CandidateId )  {
 
+		reply.Term = args.Term
+		reply.VoteGranted = true
+		rf.heartbeat <- struct {}{}
+		return
+	}else if rf.currentTerm > args.Term {
+		reply.Term = rf.currentTerm
+		reply.VoteGranted = false
+		return
+	}
+	rf.mu.Unlock()
 
+	reply.VoteGranted = false
+	return
 }
 
 func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesReply){
 	// 2A 没有日志功能
 	// 如果为 HeatBeats 的功能
+	//如果 term < currentTerm 就返回 false （5.1 节）
+	//获取这个心跳信号，意味这投票已经结束了，所有的接受该信号的人都已经变为 Leader
+	//并且重置信号量
+	rf.mu.Lock()
+	defer  rf.mu.Unlock()
+	if rf.currentTerm > args.Term {
+
+		reply.term = rf.currentTerm
+		reply.success = false
+		return
+	}else{
+
+	}
+	if rf.currentLeader == args.LeaderId && rf.currentTerm == args.Term {
+		rf.heartbeat <- struct {
+		}{}
+		reply.term = rf.currentTerm
+		reply.success =  true
+		return
+	}
+	if rf.state == FOLLOWER {
+		rf.votedFor =
+
+	}else if rf.state == CANDIDATE {
+
+	}
+
 
 }
 
@@ -274,7 +328,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.votedFor = -1
 	rf.timeout = randInt(200,300)
-	rf.heatbeat = make(chan interface{})
+	rf.heartbeat = make(chan interface{})
 
 
 	// initialize from state persisted before a crash
