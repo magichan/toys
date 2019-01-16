@@ -66,13 +66,31 @@ type Raft struct {
 
 	heartbeat chan struct{}
 	cancelSelection chan struct{}
+	becomeLeader chan bool
 }
 
-func (rf * Raft) ToFollower(term int, candidate int){
+func (rf * Raft) ToFollower(term int, candidateId int){
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 	rf.currentTerm = term
-	rf.votedFor = candidate
+	rf.votedFor = -1
+	rf.currentLeader = candidateId
+}
+func (rf * Raft) ToCandidate(){
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.votedFor = rf.me
+	rf.currentLeader = -1
+	rf.currentTerm = rf.currentTerm +1
+	rf.state = CANDIDATE
+}
+func (rf * Raft) ToLeader() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.votedFor = -1
+
+	rf.currentLeader = rf.me
+	rf.state = LEADER
 }
 
 // return currentTerm and whether this server
@@ -273,8 +291,42 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 func (rf * Raft) startUp(){
-	timer := time.NewTimer()
 
+	timer := time.NewTimer(time.Duration(rf.timeout)* time.Millisecond)
+	for {
+		select {
+			case <-timer.C:
+				if rf.state == LEADER{
+					rf.makeHeatBeat()
+					timer.Reset(150*time.Millisecond)
+				}else if rf.state == CANDIDATE{
+					go rf.makeRequestVote()
+					selectTimer := time.NewTicker(time.Duration(rf.timeout)* time.Millisecond)
+					for {
+						select {
+							case <- selectTimer.C:
+								// 选举超时
+								rf.cancelSelection <- struct{}{}
+								timer.Reset(0)
+							case success :=<- rf.becomeLeader :
+								if success {
+									rf.ToLeader()
+								}
+							    timer.Reset(0)
+						}
+					}
+
+				}else{// FOLLOWER
+				  	rf.ToCandidate()
+				  	timer.Reset(0)
+				}
+			case <-rf.heartbeat:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				timer.Reset(time.Duration(rf.timeout)* time.Millisecond)
+		}
+	}
 
 	/*
 	有两个定时器，一个是 心跳时间大于 150 毫秒 ，一个是等待心跳在 200 ~ 300 毫秒之间，等待选举超时，
@@ -302,6 +354,29 @@ func (rf * Raft) startUp(){
 	}
 	*/
 }
+func (rf * Raft) makeHeatBeat(){
+	replyChannel := make(chan bool,10)
+	for i:=0; i < len(rf.peers); i++ {
+		if i != rf.me{
+			args := &AppendEntriesArgs{Term:rf.currentTerm,LeaderId:rf.me}
+			go rf.sendHeatBeat(i,args,replyChannel)
+		}
+		// wg.Waitgroup
+		
+	}
+	for {
+		select {
+			case reply :=<- replyChannel:
+			case <- rf.cancelSelection:
+
+		}
+	}
+
+}
+func (rf* Raft) sendHeatBeat(server int, args *AppendEntriesArgs, reply * AppendEntriesReply) bool {
+	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	return ok
+}
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -324,7 +399,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.votedFor = -1
 	rf.timeout = randInt(200,300)
-	rf.heartbeat = make(chan interface{})
+	rf.heartbeat = make(chan struct{})
 
 
 	// initialize from state persisted before a crash
