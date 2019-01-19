@@ -174,7 +174,7 @@ type AppendEntriesReply struct {
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	DPrintf("Server %d Accept Request Vote",rf.me)
+	DPrintf("Server %d Accept Request Vote,args %v",rf.me, *args)
 	// Your code here (2A, 2B).
 	// 什么时候可以投，什么时候不可以投，
 	// 投票后是否重置计时器。
@@ -182,7 +182,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 		如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
 	//      并且发送 heartbeat
 	rf.mu.Lock()
+	DPrintf("Server %d votedFor %d,currentTerm:%d",rf.me,rf.votedFor,rf.currentTerm)
 	if rf.currentTerm <= args.Term && ( rf.votedFor == -1 || rf.votedFor == args.CandidateId )  {
+		DPrintf("Server %d vote Candidate %d",rf.me,args.CandidateId)
 
 		reply.Term = args.Term
 		reply.VoteGranted = true
@@ -307,23 +309,35 @@ func (rf * Raft) startUp(){
 					rf.makeHeatBeat()
 					timer.Reset(150*time.Millisecond)
 				}else if rf.state == CANDIDATE{
+
 					go rf.makeRequestVote()
-					selectTimer := time.NewTimer(time.Duration(rf.timeout)* time.Millisecond)
+					DPrintf("Wait For Election")
+					selectTimer := time.NewTimer(10*time.Duration(rf.timeout)* time.Millisecond)
+
 					for {
 						select {
 							case <- selectTimer.C:
 								// 选举超时
+								DPrintf("Election Timeout")
 								rf.cancelSelection <- struct{}{}
 								timer.Reset(0)
+								break
 							case success :=<- rf.becomeLeader :
 								if success {
+									DPrintf("Election End, The server %d is become leader ",rf.me)
 									rf.ToLeader()
 								}
-							    timer.Reset(0)
+							    timer.Reset(time.Duration(0) * time.Millisecond)
+								break
 						}
+						break
 					}
+					DPrintf("The server %d jump out for",rf.me)
+
+
 
 				}else{// FOLLOWER
+					DPrintf("Server %d Turn To Candidate",rf.me)
 				  	rf.ToCandidate()
 				  	timer.Reset(0)
 				}
@@ -420,7 +434,7 @@ func (rf * Raft) makeHeatBeat(){
 
 func (rf * Raft) makeRequestVote(){
 	DPrintf("Server %d Make Request Vote",rf.me)
-	replyChannel := make(chan *AppendEntriesReply,10)
+	replyChannel := make(chan *RequestVoteReply,10)
 	funcCancelSelect := make(chan struct{})
 	serverNumber := len(rf.peers)
 	wg := sync.WaitGroup{}
@@ -428,7 +442,7 @@ func (rf * Raft) makeRequestVote(){
 	for i:=0; i < serverNumber; i++ {
 		if i != rf.me{
 			args := &RequestVoteArgs{Term:rf.currentTerm,CandidateId:rf.me}
-			reply := &AppendEntriesReply{}
+			reply := &RequestVoteReply{}
 			wg.Add(1)
 			go func(server int){
 				ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
@@ -452,7 +466,7 @@ func (rf * Raft) makeRequestVote(){
 			select {
 			case reply :=<- replyChannel:
 				if reply != nil  {
-					if reply.Success {
+					if reply.VoteGranted {
 						DPrintf("Server %d get a request vote",rf.me)
 						votedForMe = votedForMe +1
 					}else {
@@ -460,15 +474,17 @@ func (rf * Raft) makeRequestVote(){
 						refused = refused +1
 					}
 				}
+				DPrintf("Vote Condition: voted for %d:%d, refused:%d, now:%f",rf.me,votedForMe,refused,float32(votedForMe) / float32(total))
 
 				if   flag  && float32(votedForMe) / float32(total) > 0.5{
+
 					rf.becomeLeader <- true
 					flag = false
-					log.Printf("Service %d finish a select process\n",rf.me)
+					log.Printf("Service %d become A leader \n",rf.me)
 				}else if flag && float32(refused) / float32(total) > 0.5   {
 					rf.becomeLeader <- false
 					flag = false
-					log.Printf("Service %d finish a select process\n",rf.me)
+					log.Printf("Service %d fail become a leader\n",rf.me)
 				}
 			case <- rf.cancelSelection:
 				// Ask End Selection
@@ -507,9 +523,12 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	// Your initialization code here (2A, 2B, 2C).
 	rf.state = FOLLOWER
 	rf.votedFor = -1
+	rf.currentTerm = 0
 	rf.timeout = randInt(200,300)
 	DPrintf("Service %d's timeout is %d",rf.me,rf.timeout)
 	rf.heartbeat = make(chan struct{})
+	rf.becomeLeader = make(chan bool)
+	rf.cancelSelection = make(chan struct{})
 
 
 	// initialize from state persisted before a crash
