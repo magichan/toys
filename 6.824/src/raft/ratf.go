@@ -7,10 +7,10 @@ package raft
 //
 // rf = Make(...)
 //   create a new Raft server.
-// rf.Start(command interface{}) (index, term, isleader)
+// rf.Start(command interface{}) (index, Term, isleader)
 //   start agreement on a new log entry
-// rf.GetState() (term, isLeader)
-//   ask a Raft for its current term, and whether it thinks it is leader
+// rf.GetState() (Term, isLeader)
+//   ask a Raft for its current Term, and whether it thinks it is leader
 // ApplyMsg
 //   each time a new entry is committed to the log, each Raft peer
 //   should send an ApplyMsg to the service (or tester)
@@ -18,10 +18,9 @@ package raft
 //
 
 import (
-	"golang.org/x/text/feature/plural"
 	"log"
 	"sync"
-	"sync/atomic"
+
 	"time"
 )
 import "labrpc"
@@ -38,7 +37,7 @@ import "labrpc"
 //
 type ApplyMsg struct {
 	Index       int
-	Command     struct{}
+	Command     interface{}
 	UseSnapshot bool   // ignore for lab2; only used in lab3
 	Snapshot    []byte // ignore for lab2; only used in lab3
 }
@@ -168,13 +167,14 @@ type AppendEntriesArgs struct {
 
 }
 type AppendEntriesReply struct {
-	term int
-	success bool
+	Term    int
+	Success bool
 }
 //
 // example RequestVote RPC handler.
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
+	DPrintf("Server %d Accept Request Vote",rf.me)
 	// Your code here (2A, 2B).
 	// 什么时候可以投，什么时候不可以投，
 	// 投票后是否重置计时器。
@@ -200,16 +200,18 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 }
 
 func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesReply){
+	DPrintf("Server %d Accept Append Entry",rf.me)
+
 	// 2A 没有日志功能
 	// 如果为 HeatBeats 的功能
-	//如果 term < currentTerm 就返回 false （5.1 节）
+	//如果 Term < currentTerm 就返回 false （5.1 节）
 	//获取这个心跳信号，意味这投票已经结束了，所有的接受该信号的人都已经变为 Leader
 	// 	将这个 Raft 转换为 Leader 的 Follower，重置投票记录，如果是 Candidate 转换的话，需要取消这个 raft 端的
 	rf.mu.Lock()
 	defer  rf.mu.Unlock()
 	if rf.currentTerm > args.Term {
-		reply.term = rf.currentTerm
-		reply.success = false
+		reply.Term = rf.currentTerm
+		reply.Success = false
 	}else{
 		rf.heartbeat <- struct {}{}
 
@@ -221,7 +223,7 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 		rf.currentLeader = args.LeaderId
 		rf.state = FOLLOWER
 		rf.votedFor = -1 // reset voted
-		reply.success = true
+		reply.Success = true
 		rf.mu.Unlock()
 	}
 
@@ -272,7 +274,7 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 //
 // the first return value is the index that the command will appear at
 // if it's ever committed. the second return value is the current
-// term. the third return value is true if this server believes it is
+// Term. the third return value is true if this server believes it is
 // the leader.
 //
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
@@ -306,7 +308,7 @@ func (rf * Raft) startUp(){
 					timer.Reset(150*time.Millisecond)
 				}else if rf.state == CANDIDATE{
 					go rf.makeRequestVote()
-					selectTimer := time.NewTicker(time.Duration(rf.timeout)* time.Millisecond)
+					selectTimer := time.NewTimer(time.Duration(rf.timeout)* time.Millisecond)
 					for {
 						select {
 							case <- selectTimer.C:
@@ -360,6 +362,8 @@ func (rf * Raft) startUp(){
 	*/
 }
 func (rf * Raft) makeHeatBeat(){
+	DPrintf("Server %d Make Heart Beat",rf.me)
+
 	replyChannel := make(chan *AppendEntriesReply,10)
 	CancelStatistics := make(chan struct{})
 	serverNumber := len(rf.peers)
@@ -391,7 +395,8 @@ func (rf * Raft) makeHeatBeat(){
 			select {
 			case reply :=<- replyChannel:
 				if reply != nil  {
-					if reply.success {
+					if reply.Success {
+
 						heartbeatSuccess = heartbeatSuccess +1
 					}else {
 						heartbeatFail = heartbeatFail +1
@@ -410,10 +415,11 @@ func (rf * Raft) makeHeatBeat(){
 	wg.Wait()
 	close(replyChannel)
 	CancelStatistics <- struct{}{} // close Election statistics Goroutine
-	log.Printf("Service %d heartbeat data: success:%d ,fail:%d ,net broken:%d\n",heartbeatSuccess,heartbeatFail,netBroken)
+	log.Printf("Service %d heartbeat data: Success:%d ,fail:%d ,net broken:%d\n",rf.me,heartbeatSuccess,heartbeatFail,netBroken)
 }
 
 func (rf * Raft) makeRequestVote(){
+	DPrintf("Server %d Make Request Vote",rf.me)
 	replyChannel := make(chan *AppendEntriesReply,10)
 	funcCancelSelect := make(chan struct{})
 	serverNumber := len(rf.peers)
@@ -436,7 +442,7 @@ func (rf * Raft) makeRequestVote(){
 		}
 	}
 
-	total := serverNumber+1
+	total := serverNumber
 	votedForMe := 1
 	refused := 0
 	go func(){
@@ -446,12 +452,15 @@ func (rf * Raft) makeRequestVote(){
 			select {
 			case reply :=<- replyChannel:
 				if reply != nil  {
-					if reply.success {
+					if reply.Success {
+						DPrintf("Server %d get a request vote",rf.me)
 						votedForMe = votedForMe +1
 					}else {
+						DPrintf("Server %d fail get  a request vote",rf.me)
 						refused = refused +1
 					}
 				}
+
 				if   flag  && float32(votedForMe) / float32(total) > 0.5{
 					rf.becomeLeader <- true
 					flag = false
@@ -499,6 +508,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.state = FOLLOWER
 	rf.votedFor = -1
 	rf.timeout = randInt(200,300)
+	DPrintf("Service %d's timeout is %d",rf.me,rf.timeout)
 	rf.heartbeat = make(chan struct{})
 
 
