@@ -19,7 +19,9 @@ package raft
 
 import (
 	"golang.org/x/text/feature/plural"
+	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 import "labrpc"
@@ -146,8 +148,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term int
 	CandidateId int
-	LastLogIndex int
-	LastLogTerm int
+	//LastLogIndex int
+	//LastLogTerm int
 
 }
 
@@ -210,14 +212,17 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 		reply.success = false
 	}else{
 		rf.heartbeat <- struct {}{}
-		rf.currentTerm = args.Term
-		rf.currentLeader = args.LeaderId
+
 		if rf.state == CANDIDATE {
 			rf.cancelSelection <- struct{}{}
 		}
+		rf.mu.Lock()
+		rf.currentTerm = args.Term
+		rf.currentLeader = args.LeaderId
 		rf.state = FOLLOWER
 		rf.votedFor = -1 // reset voted
 		reply.success = true
+		rf.mu.Unlock()
 	}
 
 }
@@ -355,28 +360,123 @@ func (rf * Raft) startUp(){
 	*/
 }
 func (rf * Raft) makeHeatBeat(){
-	replyChannel := make(chan bool,10)
-	for i:=0; i < len(rf.peers); i++ {
+	replyChannel := make(chan *AppendEntriesReply,10)
+	CancelStatistics := make(chan struct{})
+	serverNumber := len(rf.peers)
+	wg := sync.WaitGroup{}
+
+	for i:=0; i < serverNumber; i++ {
 		if i != rf.me{
 			args := &AppendEntriesArgs{Term:rf.currentTerm,LeaderId:rf.me}
-			go rf.sendHeatBeat(i,args,replyChannel)
+			reply := &AppendEntriesReply{}
+			wg.Add(1)
+			go func(server int){
+				ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+				if ok {
+					replyChannel <- reply
+				}else{
+					replyChannel <- nil
+				}
+				wg.Done()
+			}(i)
 		}
-		// wg.Waitgroup
-		
 	}
-	for {
-		select {
+
+	heartbeatSuccess := 0
+	heartbeatFail := 0
+	netBroken := 0
+	go func(){
+		//  statistics Goroutine
+		for {
+			select {
 			case reply :=<- replyChannel:
-			case <- rf.cancelSelection:
+				if reply != nil  {
+					if reply.success {
+						heartbeatSuccess = heartbeatSuccess +1
+					}else {
+						heartbeatFail = heartbeatFail +1
+					}
 
+				}else{
+					netBroken = netBroken +1
+				}
+			case <- rf.cancelSelection:
+				// Ask End Selection
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(replyChannel)
+	CancelStatistics <- struct{}{} // close Election statistics Goroutine
+	log.Printf("Service %d heartbeat data: success:%d ,fail:%d ,net broken:%d\n",heartbeatSuccess,heartbeatFail,netBroken)
+}
+
+func (rf * Raft) makeRequestVote(){
+	replyChannel := make(chan *AppendEntriesReply,10)
+	funcCancelSelect := make(chan struct{})
+	serverNumber := len(rf.peers)
+	wg := sync.WaitGroup{}
+
+	for i:=0; i < serverNumber; i++ {
+		if i != rf.me{
+			args := &RequestVoteArgs{Term:rf.currentTerm,CandidateId:rf.me}
+			reply := &AppendEntriesReply{}
+			wg.Add(1)
+			go func(server int){
+				ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+				if ok {
+					replyChannel <- reply
+				}else{
+					replyChannel <- nil
+				}
+				wg.Done()
+			}(i)
 		}
 	}
 
+	total := serverNumber+1
+	votedForMe := 1
+	refused := 0
+	go func(){
+		// Election statistics Goroutine
+		flag := true // make sure only send one time
+		for {
+			select {
+			case reply :=<- replyChannel:
+				if reply != nil  {
+					if reply.success {
+						votedForMe = votedForMe +1
+					}else {
+						refused = refused +1
+					}
+				}
+				if   flag  && float32(votedForMe) / float32(total) > 0.5{
+					rf.becomeLeader <- true
+					flag = false
+					log.Printf("Service %d finish a select process\n",rf.me)
+				}else if flag && float32(refused) / float32(total) > 0.5   {
+					rf.becomeLeader <- false
+					flag = false
+					log.Printf("Service %d finish a select process\n",rf.me)
+				}
+			case <- rf.cancelSelection:
+				// Ask End Selection
+				return
+			case <- funcCancelSelect:
+				// Election finish End
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+	close(replyChannel)
+	funcCancelSelect <- struct{}{} // close Election statistics Goroutine
+	log.Printf("Service %d end a select process\n",rf.me)
 }
-func (rf* Raft) sendHeatBeat(server int, args *AppendEntriesArgs, reply * AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	return ok
-}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
