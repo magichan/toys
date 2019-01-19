@@ -102,6 +102,14 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 
+	term = rf.currentTerm
+	if rf.state == LEADER{
+		isleader = true
+	}else{
+		isleader = false
+	}
+	DPrintf("Server %d:Term:%d Status %d",rf.me,rf.currentTerm,rf.state)
+
 	return term, isleader
 }
 
@@ -182,6 +190,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// 		如果 votedFor 为空或者就是 candidateId，并且候选人的日志至少和自己一样新，那么就投票给他（5.2 节，5.4 节）
 	//      并且发送 heartbeat
 	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	DPrintf("Server %d votedFor %d,currentTerm:%d",rf.me,rf.votedFor,rf.currentTerm)
 	if rf.currentTerm <= args.Term && ( rf.votedFor == -1 || rf.votedFor == args.CandidateId )  {
 		DPrintf("Server %d vote Candidate %d",rf.me,args.CandidateId)
@@ -195,7 +204,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		reply.VoteGranted = false
 		return
 	}
-	rf.mu.Unlock()
+
 
 	reply.VoteGranted = false
 	return
@@ -209,24 +218,34 @@ func (rf *Raft) AppendEntries(args * AppendEntriesArgs, reply * AppendEntriesRep
 	//如果 Term < currentTerm 就返回 false （5.1 节）
 	//获取这个心跳信号，意味这投票已经结束了，所有的接受该信号的人都已经变为 Leader
 	// 	将这个 Raft 转换为 Leader 的 Follower，重置投票记录，如果是 Candidate 转换的话，需要取消这个 raft 端的
-	rf.mu.Lock()
-	defer  rf.mu.Unlock()
+	//rf.mu.Lock()
+	//defer  rf.mu.Unlock()
 	if rf.currentTerm > args.Term {
+		DPrintf("Server %d:Append Entry Deal Fail",rf.me)
+
 		reply.Term = rf.currentTerm
 		reply.Success = false
 	}else{
+		DPrintf("Server %d:Append Entry Deal Success, Arg:%v",rf.me,args)
 		rf.heartbeat <- struct {}{}
-
+		DPrintf("Run This One?")
 		if rf.state == CANDIDATE {
+
 			rf.cancelSelection <- struct{}{}
 		}
+
 		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		DPrintf("Run mu Lock?")
 		rf.currentTerm = args.Term
 		rf.currentLeader = args.LeaderId
 		rf.state = FOLLOWER
 		rf.votedFor = -1 // reset voted
 		reply.Success = true
-		rf.mu.Unlock()
+
+		rf.GetState()
+
+
 	}
 
 }
@@ -306,7 +325,7 @@ func (rf * Raft) startUp(){
 		select {
 			case <-timer.C:
 				if rf.state == LEADER{
-					rf.makeHeatBeat()
+					go rf.makeHeatBeat()
 					timer.Reset(150*time.Millisecond)
 				}else if rf.state == CANDIDATE{
 
@@ -324,7 +343,7 @@ func (rf * Raft) startUp(){
 								break
 							case success :=<- rf.becomeLeader :
 								if success {
-									DPrintf("Election End, The server %d is become leader ",rf.me)
+									ADPrintf("Election End, The server %d is become leader ",rf.me)
 									rf.ToLeader()
 								}
 							    timer.Reset(time.Duration(0) * time.Millisecond)
@@ -332,9 +351,6 @@ func (rf * Raft) startUp(){
 						}
 						break
 					}
-					DPrintf("The server %d jump out for",rf.me)
-
-
 
 				}else{// FOLLOWER
 					DPrintf("Server %d Turn To Candidate",rf.me)
@@ -342,10 +358,13 @@ func (rf * Raft) startUp(){
 				  	timer.Reset(0)
 				}
 			case <-rf.heartbeat:
+				DPrintf("Server %d:Rest Timer for heartbeat",rf.me)
 				if !timer.Stop() {
 					<-timer.C
 				}
 				timer.Reset(time.Duration(rf.timeout)* time.Millisecond)
+				//timer.Reset(time.Duration(0)* time.Millisecond)
+
 		}
 	}
 
@@ -385,14 +404,19 @@ func (rf * Raft) makeHeatBeat(){
 
 	for i:=0; i < serverNumber; i++ {
 		if i != rf.me{
+
 			args := &AppendEntriesArgs{Term:rf.currentTerm,LeaderId:rf.me}
 			reply := &AppendEntriesReply{}
 			wg.Add(1)
 			go func(server int){
 				ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+
+
 				if ok {
+					DPrintf("Server %d receive a  heartbeat reply from %d, the return is %v",rf.me,server,reply.Success)
 					replyChannel <- reply
 				}else{
+					DPrintf("Server %d  fail receive a  heartbeat reply from %d",rf.me,server)
 					replyChannel <- nil
 				}
 				wg.Done()
@@ -467,10 +491,10 @@ func (rf * Raft) makeRequestVote(){
 			case reply :=<- replyChannel:
 				if reply != nil  {
 					if reply.VoteGranted {
-						DPrintf("Server %d get a request vote",rf.me)
+						DPrintf("Server %d get a success request vote reply ",rf.me)
 						votedForMe = votedForMe +1
 					}else {
-						DPrintf("Server %d fail get  a request vote",rf.me)
+						DPrintf("Server %d get a  fail request vote reply" ,rf.me)
 						refused = refused +1
 					}
 				}
@@ -491,6 +515,7 @@ func (rf * Raft) makeRequestVote(){
 				return
 			case <- funcCancelSelect:
 				// Election finish End
+				DPrintf("Election Statistics Goroutine End")
 				return
 			}
 		}
